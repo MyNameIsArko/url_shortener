@@ -1,5 +1,6 @@
 use mongodb::{Client, Collection};
 use std::env;
+use std::fs;
 use std::error::Error;
 use serde_json::Value;
 use reqwest::Client as ReqwestClient;
@@ -7,23 +8,19 @@ use String;
 use bson::Document;
 use mongodb::bson::doc;
 
-
-const BITLY_ACCESS_TOKEN: &str = "TOKEN";
-const CLIENT_URI: &str = "URL";
-
 // Create body for the request
 fn create_data(url: &str) -> String {
     String::from("{ \"long_url\": \"") + url + "\" }"
 }
 
 // Create headers for the request
-fn create_headers() -> reqwest::header::HeaderMap {
+fn create_headers(token: &str) -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::CONTENT_TYPE,
         reqwest::header::HeaderValue::from_static("application/json"),
     );
-    let auth =String::from("Bearer ") + BITLY_ACCESS_TOKEN;
+    let auth =String::from("Bearer ") + token;
     headers.insert(
         reqwest::header::AUTHORIZATION,
         reqwest::header::HeaderValue::from_str(&auth).unwrap(),
@@ -32,10 +29,10 @@ fn create_headers() -> reqwest::header::HeaderMap {
 }
 
 // Function that posts given url with data and headers to the bitly api and returns the response
-async fn shorten_url(url: &str) -> Result<String, reqwest::Error> {
+async fn shorten_url(url: &str, token: &str) -> Result<String, reqwest::Error> {
     let text = ReqwestClient::new()
         .post("https://api-ssl.bitly.com/v4/shorten")
-        .headers(create_headers())
+        .headers(create_headers(token))
         .body(create_data(url))
         .send()
         .await?
@@ -44,11 +41,16 @@ async fn shorten_url(url: &str) -> Result<String, reqwest::Error> {
     Ok(text)
 }
 
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Read settings from config.json
+    let settings: Value = serde_json::from_str(&fs::read_to_string("config.json").unwrap()).unwrap();
+    let bitly_access_token: &str = settings["bitlyAccessToken"].as_str().unwrap();
+    let client_uri: &str = settings["clientURI"].as_str().unwrap();
 
     // A Client is needed to connect to MongoDB:
-    let client = Client::with_uri_str(CLIENT_URI).await?;
+    let client = Client::with_uri_str(client_uri).await?;
 
     // Connect to the "bitly" collection
     let database : Collection<Document> = client.database("test_db").collection("bitly");
@@ -66,7 +68,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         None => {
             // If the url is not in the database, create a new short url, print it and insert it into the database
-            let js : Value = serde_json::from_str(&shorten_url(url).await.unwrap()).unwrap();
+            let js : Value = serde_json::from_str(&shorten_url(url, bitly_access_token).await.unwrap()).unwrap();
             let short = js["id"].as_str().unwrap();
             println!("Newly created: {}", short);
             let record = doc! { "url": url, "short": short };
@@ -80,7 +82,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 // Check if the shorten_url function returns the correct short url
 #[tokio::test]
 async fn check_shortener() {
-    let data = shorten_url("https://www.rust-lang.org/").await.unwrap();
+    let settings: Value = serde_json::from_str(&fs::read_to_string("config.json").unwrap()).unwrap();
+    let bitly_access_token: &str = settings["bitlyAccessToken"].as_str().unwrap();
+    let data = shorten_url("https://www.rust-lang.org/", bitly_access_token).await.unwrap();
     let js : Value = serde_json::from_str(&data).unwrap();
     assert_eq!(js["id"].as_str().unwrap(), "bit.ly/3y5R16y");
 }
@@ -88,14 +92,18 @@ async fn check_shortener() {
 // Check if it's possible to connect to the database
 #[tokio::test]
 async fn connect_to_database() {
-    Client::with_uri_str(CLIENT_URI).await.unwrap();
+    let settings: Value = serde_json::from_str(&fs::read_to_string("config.json").unwrap()).unwrap();
+    let client_uri: &str = settings["clientURI"].as_str().unwrap();
+    Client::with_uri_str(client_uri).await.unwrap();
 }
 
 // Check if the database properly returns the short url when searching for it
 #[tokio::test]
 async fn read_value_from_database() {
-    Client::with_uri_str(CLIENT_URI).await.unwrap();
-    let database : Collection<Document> = Client::with_uri_str(CLIENT_URI).await.unwrap().database("test_db").collection("bitly");
+    let settings: Value = serde_json::from_str(&fs::read_to_string("config.json").unwrap()).unwrap();
+    let client_uri: &str = settings["clientURI"].as_str().unwrap();
+    Client::with_uri_str(client_uri).await.unwrap();
+    let database : Collection<Document> = Client::with_uri_str(client_uri).await.unwrap().database("test_db").collection("bitly");
     let doc = database.find_one(doc! { "url": "bitly" }, None).await.unwrap().unwrap();
     assert_eq!(doc.get("short").unwrap().as_str().unwrap(), "b");
 }
